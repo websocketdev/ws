@@ -1,115 +1,90 @@
-/*!
- * ws: a node.js websocket client
- * Copyright(c) 2011 Einar Otto Stangvik <einaros@gmail.com>
- * MIT Licensed
- */
+'use strict';
 
-/**
- * Benchmark dependencies.
- */
+const benchmark = require('benchmark');
+const crypto = require('crypto');
 
-var benchmark = require('benchmark')
-  , Receiver = require('../').Receiver
-  , suite = new benchmark.Suite('Receiver');
-require('tinycolor');
-require('./util');
+const WebSocket = require('..');
 
-/**
- * Setup receiver.
- */
- 
-suite.on('start', function () {
-  receiver = new Receiver();
-});
+const Receiver = WebSocket.Receiver;
+const Sender = WebSocket.Sender;
 
-suite.on('cycle', function () {
-  receiver = new Receiver();
-});
+const options = {
+  fin: true,
+  rsv1: false,
+  mask: true,
+  readOnly: false
+};
 
-/**
- * Benchmarks.
- */
+function createBinaryFrame(length) {
+  const list = Sender.frame(
+    crypto.randomBytes(length),
+    Object.assign({ opcode: 0x02 }, options)
+  );
 
-var pingMessage = 'Hello'
-  , pingPacket1 = getBufferFromHexString('89 ' + (pack(2, 0x80 | pingMessage.length)) + 
-                                         ' 34 83 a8 68 '+ getHexStringFromBuffer(mask(pingMessage, '34 83 a8 68')));
-suite.add('ping message', function () {
-  receiver.add(pingPacket1);  
-});
+  return Buffer.concat(list);
+}
 
-var pingPacket2 = getBufferFromHexString('89 00')
-suite.add('ping with no data', function () {
-  receiver.add(pingPacket2);
-});
+const pingFrame1 = Buffer.concat(
+  Sender.frame(crypto.randomBytes(5), Object.assign({ opcode: 0x09 }, options))
+);
 
-var closePacket = getBufferFromHexString('88 00');
-suite.add('close message', function () {
-  receiver.add(closePacket);
-  receiver.endPacket();
-});
+const textFrame = Buffer.from('819461616161' + '61'.repeat(20), 'hex');
+const pingFrame2 = Buffer.from('8900', 'hex');
+const binaryFrame1 = createBinaryFrame(125);
+const binaryFrame2 = createBinaryFrame(65535);
+const binaryFrame3 = createBinaryFrame(200 * 1024);
+const binaryFrame4 = createBinaryFrame(1024 * 1024);
 
-var maskedTextPacket = getBufferFromHexString('81 93 34 83 a8 68 01 b9 92 52 4f a1 c6 09 59 e6 8a 52 16 e6 cb 00 5b a1 d5');
-suite.add('masked text message', function () {
-  receiver.add(maskedTextPacket);
-});
+const suite = new benchmark.Suite();
+const receiver = new Receiver();
 
-binaryDataPacket = (function() {
-  var length = 125
-    , message = new Buffer(length)
-  for (var i = 0; i < length; ++i) message[i] = i % 10;
-  return getBufferFromHexString('82 ' + getHybiLengthAsHexString(length, true) + ' 34 83 a8 68 '
-       + getHexStringFromBuffer(mask(message), '34 83 a8 68'));
-})();
-suite.add('binary data (125 bytes)', function () {
-  try {
-    receiver.add(binaryDataPacket);
-    
+suite.add('ping frame (5 bytes payload)', {
+  defer: true,
+  fn: (deferred) => {
+    receiver.write(pingFrame1, deferred.resolve.bind(deferred));
   }
-  catch(e) {console.log(e)}
+});
+suite.add('ping frame (no payload)', {
+  defer: true,
+  fn: (deferred) => {
+    receiver.write(pingFrame2, deferred.resolve.bind(deferred));
+  }
+});
+suite.add('text frame (20 bytes payload)', {
+  defer: true,
+  fn: (deferred) => {
+    receiver.write(textFrame, deferred.resolve.bind(deferred));
+  }
+});
+suite.add('binary frame (125 bytes payload)', {
+  defer: true,
+  fn: (deferred) => {
+    receiver.write(binaryFrame1, deferred.resolve.bind(deferred));
+  }
+});
+suite.add('binary frame (65535 bytes payload)', {
+  defer: true,
+  fn: (deferred) => {
+    receiver.write(binaryFrame2, deferred.resolve.bind(deferred));
+  }
+});
+suite.add('binary frame (200 KiB payload)', {
+  defer: true,
+  fn: (deferred) => {
+    receiver.write(binaryFrame3, deferred.resolve.bind(deferred));
+  }
+});
+suite.add('binary frame (1 MiB payload)', {
+  defer: true,
+  fn: (deferred) => {
+    receiver.write(binaryFrame4, deferred.resolve.bind(deferred));
+  }
 });
 
-binaryDataPacket2 = (function() {
-  var length = 65535
-    , message = new Buffer(length)
-  for (var i = 0; i < length; ++i) message[i] = i % 10;
-  return getBufferFromHexString('82 ' + getHybiLengthAsHexString(length, true) + ' 34 83 a8 68 '
-       + getHexStringFromBuffer(mask(message), '34 83 a8 68'));
-})();
-suite.add('binary data (65535 bytes)', function () {
-  receiver.add(binaryDataPacket2);
-});
+suite.on('cycle', (e) => console.log(e.target.toString()));
 
-binaryDataPacket3 = (function() {
-  var length = 200*1024
-    , message = new Buffer(length)
-  for (var i = 0; i < length; ++i) message[i] = i % 10;
-  return getBufferFromHexString('82 ' + getHybiLengthAsHexString(length, true) + ' 34 83 a8 68 '
-       + getHexStringFromBuffer(mask(message), '34 83 a8 68'));
-})();
-suite.add('binary data (200 kB)', function () {
-  receiver.add(binaryDataPacket3);
-});
-
-/**
- * Output progress.
- */
-
-suite.on('cycle', function (bench, details) {
-  console.log('\n  ' + suite.name.grey, details.name.white.bold);
-  console.log('  ' + [
-      details.hz.toFixed(2).cyan + ' ops/sec'.grey
-    , details.count.toString().white + ' times executed'.grey
-    , 'benchmark took '.grey + details.times.elapsed.toString().white + ' sec.'.grey
-    , 
-  ].join(', '.grey));
-});
-
-/**
- * Run/export benchmarks.
- */
-
-if (!module.parent) {
-  suite.run();
+if (require.main === module) {
+  suite.run({ async: true });
 } else {
   module.exports = suite;
 }

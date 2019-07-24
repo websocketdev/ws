@@ -1,66 +1,48 @@
-/*!
- * ws: a node.js websocket client
- * Copyright(c) 2011 Einar Otto Stangvik <einaros@gmail.com>
- * MIT Licensed
- */
+'use strict';
 
-/**
- * Benchmark dependencies.
- */
+const benchmark = require('benchmark');
+const crypto = require('crypto');
 
-var benchmark = require('benchmark')
-  , Sender = require('../').Sender
-  , suite = new benchmark.Suite('Sender');
-require('tinycolor');
-require('./util');
+const Sender = require('../').Sender;
 
-/**
- * Setup sender.
- */
- 
-suite.on('start', function () {
-  sender = new Sender();
-  sender._socket = { write: function() {} };
-});
+const data1 = crypto.randomBytes(64);
+const data2 = crypto.randomBytes(16 * 1024);
+const data3 = crypto.randomBytes(64 * 1024);
+const data4 = crypto.randomBytes(200 * 1024);
+const data5 = crypto.randomBytes(1024 * 1024);
 
-suite.on('cycle', function () {
-  sender = new Sender();
-  sender._socket = { write: function() {} };
-});
+const opts1 = {
+  readOnly: false,
+  mask: false,
+  rsv1: false,
+  opcode: 2,
+  fin: true
+};
+const opts2 = {
+  readOnly: true,
+  rsv1: false,
+  mask: true,
+  opcode: 2,
+  fin: true
+};
 
-/**
- * Benchmarks
- */
+const suite = new benchmark.Suite();
 
-framePacket = new Buffer(200*1024);
-framePacket.fill(99);
-suite.add('frameAndSend, unmasked (200 kB)', function () {
-  sender.frameAndSend(0x2, framePacket, true, false);
-});
-suite.add('frameAndSend, masked (200 kB)', function () {
-  sender.frameAndSend(0x2, framePacket, true, true);
-});
+suite.add('frame, unmasked (64 B)', () => Sender.frame(data1, opts1));
+suite.add('frame, masked (64 B)', () => Sender.frame(data1, opts2));
+suite.add('frame, unmasked (16 KiB)', () => Sender.frame(data2, opts1));
+suite.add('frame, masked (16 KiB)', () => Sender.frame(data2, opts2));
+suite.add('frame, unmasked (64 KiB)', () => Sender.frame(data3, opts1));
+suite.add('frame, masked (64 KiB)', () => Sender.frame(data3, opts2));
+suite.add('frame, unmasked (200 KiB)', () => Sender.frame(data4, opts1));
+suite.add('frame, masked (200 KiB)', () => Sender.frame(data4, opts2));
+suite.add('frame, unmasked (1 MiB)', () => Sender.frame(data5, opts1));
+suite.add('frame, masked (1 MiB)', () => Sender.frame(data5, opts2));
 
-/**
- * Output progress.
- */
+suite.on('cycle', (e) => console.log(e.target.toString()));
 
-suite.on('cycle', function (bench, details) {
-  console.log('\n  ' + suite.name.grey, details.name.white.bold);
-  console.log('  ' + [
-      details.hz.toFixed(2).cyan + ' ops/sec'.grey
-    , details.count.toString().white + ' times executed'.grey
-    , 'benchmark took '.grey + details.times.elapsed.toString().white + ' sec.'.grey
-    , 
-  ].join(', '.grey));
-});
-
-/**
- * Run/export benchmarks.
- */
-
-if (!module.parent) {
-  suite.run();
+if (require.main === module) {
+  suite.run({ async: true });
 } else {
   module.exports = suite;
 }

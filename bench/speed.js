@@ -1,105 +1,113 @@
-var cluster = require('cluster')
-  , WebSocket = require('../')
-  , WebSocketServer = WebSocket.Server
-  , crypto = require('crypto')
-  , util = require('util')
-  , ansi = require('ansi');
-require('tinycolor');
+'use strict';
 
-function roundPrec(num, prec) {
-  var mul = Math.pow(10, prec);
-  return Math.round(num * mul) / mul;
-}
+const cluster = require('cluster');
+const http = require('http');
 
-function humanSize(bytes) {
-  if (bytes >= 1048576) return roundPrec(bytes / 1048576, 2) + ' MB';
-  if (bytes >= 1024) return roundPrec(bytes / 1024, 2) + ' kB';
-  return roundPrec(bytes, 2) + ' B';
-}
+const WebSocket = require('..');
 
-function generateRandomData(size) {
-  var buffer = new Buffer(size);
-  for (var i = 0; i < size; ++i) {
-    buffer[i] = ~~(Math.random() * 127);
-  }
-  return buffer;
-}
+const port = 8181;
+const path = '';
+// const path = '/tmp/wss.sock';
 
 if (cluster.isMaster) {
-  var wss = new WebSocketServer({port: 8181}, function() {
-    cluster.fork();
+  const server = http.createServer();
+  const wss = new WebSocket.Server({
+    maxPayload: 600 * 1024 * 1024,
+    perMessageDeflate: false,
+    clientTracking: false,
+    server
   });
-  wss.on('connection', function(ws) {
-    ws.on('message', function(data, flags) {
-      ws.send(data, {binary: flags&&flags.binary});
-    });
-    ws.on('close', function() {});
-  });
-  cluster.on('death', function(worker) {
-    wss.close();
-  });
-}
-else {
-  var cursor = ansi(process.stdout);
 
-  var configs = [
+  wss.on('connection', (ws) => {
+    ws.on('message', (data) => ws.send(data));
+  });
+
+  server.listen(path ? { path } : { port }, () => cluster.fork());
+
+  cluster.on('exit', () => {
+    wss.close();
+    server.close();
+  });
+} else {
+  const configs = [
     [true, 10000, 64],
-    [true, 5000, 16*1024],
-    [true, 1000, 128*1024],
-    [true, 100, 1024*1024],
-    [true, 1, 500*1024*1024],
+    [true, 5000, 16 * 1024],
+    [true, 1000, 128 * 1024],
+    [true, 100, 1024 * 1024],
+    [true, 1, 500 * 1024 * 1024],
     [false, 10000, 64],
-    [false, 5000, 16*1024],
-    [false, 1000, 128*1024],
-    [false, 100, 1024*1024],
+    [false, 5000, 16 * 1024],
+    [false, 1000, 128 * 1024],
+    [false, 100, 1024 * 1024]
   ];
 
-  var largest = configs[0][1];
-  for (var i = 0, l = configs.length; i < l; ++i) {
-    if (configs[i][2] > largest) largest = configs[i][2];
+  const roundPrec = (num, prec) => {
+    const mul = Math.pow(10, prec);
+    return Math.round(num * mul) / mul;
+  };
+
+  const humanSize = (bytes) => {
+    if (bytes >= 1073741824) return roundPrec(bytes / 1073741824, 2) + ' GiB';
+    if (bytes >= 1048576) return roundPrec(bytes / 1048576, 2) + ' MiB';
+    if (bytes >= 1024) return roundPrec(bytes / 1024, 2) + ' KiB';
+    return roundPrec(bytes, 2) + ' B';
+  };
+
+  const largest = configs.reduce(
+    (prev, curr) => (curr[2] > prev ? curr[2] : prev),
+    0
+  );
+  console.log('Generating %s of test data...', humanSize(largest));
+  const randomBytes = Buffer.allocUnsafe(largest);
+
+  for (let i = 0; i < largest; ++i) {
+    randomBytes[i] = ~~(Math.random() * 127);
   }
 
-  console.log('Generating %s of test data ...', humanSize(largest));
-  var randomBytes = generateRandomData(largest);
+  console.log(`Testing ws on ${path || '[::]:' + port}`);
 
-  function roundtrip(useBinary, roundtrips, size, cb) {
-    var data = randomBytes.slice(0, size);
-    var prefix = util.format('Running %d roundtrips of %s %s data', roundtrips, humanSize(size), useBinary ? 'binary' : 'text');
-    console.log(prefix);
-    var client = new WebSocket('ws://localhost:' + '8181');
-    var dt;
-    var roundtrip = 0;
-    function send() {
-      client.send(data, {binary: useBinary});
-    }
-    client.on('error', function(e) {
-      console.error(e);
-      process.exit();
+  const runConfig = (useBinary, roundtrips, size, cb) => {
+    const data = randomBytes.slice(0, size);
+    const url = path ? `ws+unix://${path}` : `ws://localhost:${port}`;
+    const ws = new WebSocket(url, {
+      maxPayload: 600 * 1024 * 1024
     });
-    client.on('open', function() {
-      dt = Date.now();
-      send();
+    let roundtrip = 0;
+    let time;
+
+    ws.on('error', (err) => {
+      console.error(err.stack);
+      cluster.worker.disconnect();
     });
-    client.on('message', function(data, flags) {
-      if (++roundtrip == roundtrips) {
-        var elapsed = Date.now() - dt;
-        cursor.up();
-        console.log('%s:\t%ss\t%s'
-          , useBinary ? prefix.green : prefix.cyan
-          , roundPrec(elapsed / 1000, 1).toString().green.bold
-          , (humanSize((size * roundtrips) / elapsed * 1000) + '/s').blue.bold);
-        client.close();
-        cb();
-        return;
-      }
-      process.nextTick(send);
+    ws.on('open', () => {
+      time = process.hrtime();
+      ws.send(data, { binary: useBinary });
     });
-  }
+    ws.on('message', () => {
+      if (++roundtrip !== roundtrips)
+        return ws.send(data, { binary: useBinary });
+
+      let elapsed = process.hrtime(time);
+      elapsed = elapsed[0] * 1e9 + elapsed[1];
+
+      console.log(
+        '%d roundtrips of %s %s data:\t%ss\t%s',
+        roundtrips,
+        humanSize(size),
+        useBinary ? 'binary' : 'text',
+        roundPrec(elapsed / 1e9, 1),
+        humanSize(((size * 2 * roundtrips) / elapsed) * 1e9) + '/s'
+      );
+
+      ws.close();
+      cb();
+    });
+  };
 
   (function run() {
-    if (configs.length == 0) process.exit();
-    var config = configs.shift();
+    if (configs.length === 0) return cluster.worker.disconnect();
+    const config = configs.shift();
     config.push(run);
-    roundtrip.apply(null, config);
+    runConfig.apply(null, config);
   })();
 }
